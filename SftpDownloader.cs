@@ -94,4 +94,78 @@ public static class SftpDownloader
                 sftpClient.Disconnect();
         }
     }
+
+    public static List<string> DownloadFilesNotStaged(
+        string host,
+        int port,
+        string username,
+        string sshPrivateKeyPath,
+        string remoteDirectory,
+        string localDirectory,
+        IReadOnlySet<string> stagedFileNames)
+    {
+        if (!File.Exists(sshPrivateKeyPath))
+        {
+            throw new FileNotFoundException(
+                "SSH private key not found.",
+                sshPrivateKeyPath);
+        }
+
+        Directory.CreateDirectory(localDirectory);
+
+        using var privateKey = new PrivateKeyFile(sshPrivateKeyPath);
+
+        using var sftpClient = new SftpClient(
+            host,
+            port,
+            username,
+            new[] { privateKey });
+
+        Console.WriteLine("Connecting to SFTP server...");
+
+        sftpClient.Connect();
+
+        try
+        {
+            Console.WriteLine("Connected to SFTP server successfully.");
+
+            var remoteFiles = sftpClient.ListDirectory(remoteDirectory)
+                .Where(f => !f.IsDirectory && !f.IsSymbolicLink)
+                .Where(f => System.Text.RegularExpressions.Regex.IsMatch(
+                    f.Name,
+                    @"^nonAICRDetail_\d{4}-\d{2}-\d{2}\.csv\.pgp$",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                .OrderBy(f => f.Name)
+                .ToList();
+
+            var localFiles = new List<string>();
+
+            foreach (var remoteFile in remoteFiles)
+            {
+                var sourceFileName = Path.GetFileNameWithoutExtension(remoteFile.Name);
+                if (stagedFileNames.Contains(sourceFileName))
+                {
+                    Console.WriteLine($"Already staged in database, skipping download: {sourceFileName}");
+                    continue;
+                }
+
+                var destination = Path.Combine(localDirectory, remoteFile.Name);
+                if (!File.Exists(destination))
+                {
+                    using var output = File.Create(destination);
+                    sftpClient.DownloadFile(remoteFile.FullName, output);
+                    Console.WriteLine($"Downloaded successfully: {destination}");
+                }
+
+                localFiles.Add(destination);
+            }
+
+            return localFiles;
+        }
+        finally
+        {
+            if (sftpClient.IsConnected)
+                sftpClient.Disconnect();
+        }
+    }
 }
